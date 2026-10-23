@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       ipa_url:
-        description: "Direct link to a decrypted Spotify IPA"
+        description: "Direct IPA URL or a shared Google Drive file link (decrypted Spotify IPA)"
         required: true
         type: string
       upload_method:
@@ -40,10 +40,48 @@ jobs:
           python3 -m pip install --break-system-packages git+https://github.com/asdfzxcvbn/pyzule-rw.git
 
       - name: Download IPA
+        shell: bash
+        env:
+          IPA_URL: ${{ inputs.ipa_url }}
         run: |
+          set -euo pipefail
           mkdir -p ipa
-          curl -fsSL "${{ inputs.ipa_url }}" -o ipa/spotify.ipa
-          case "$(file --mime-type -b ipa/spotify.ipa)" in application/zip|application/x-ios-app) ;; *) echo "::error::Not an IPA"; exit 1 ;; esac
+
+          # Google Drive links usually return an HTML confirmation page to curl.
+          if [[ "$IPA_URL" =~ ^https://(drive|docs)\.google\.com/ ]]; then
+            python3 -m pip install --break-system-packages gdown
+            python3 -m gdown --fuzzy "$IPA_URL" -O ipa/spotify.ipa
+          else
+            curl --fail --location --show-error --silent \
+              --retry 3 --connect-timeout 30 \
+              "$IPA_URL" --output ipa/spotify.ipa
+          fi
+
+          # A downloaded HTML/error page must not be mistaken for an IPA.
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          from zipfile import ZipFile, BadZipFile
+          import sys
+
+          path = Path('ipa/spotify.ipa')
+          try:
+              with ZipFile(path) as archive:
+                  names = archive.namelist()
+                  app_plists = [name for name in names
+                                if name.startswith('Payload/')
+                                and name.count('/') == 2
+                                and name.endswith('.app/Info.plist')]
+                  if not app_plists:
+                      raise ValueError('Missing Payload/<App>.app/Info.plist')
+                  bad_member = archive.testzip()
+                  if bad_member:
+                      raise ValueError(f'Corrupt archive member: {bad_member}')
+          except (BadZipFile, ValueError, OSError) as exc:
+              print(f'::error::Downloaded file is not a valid IPA: {exc}', file=sys.stderr)
+              print('Check Google Drive sharing: Anyone with the link -> Viewer.', file=sys.stderr)
+              sys.exit(1)
+          print(f'IPA validated: {path.stat().st_size:,} bytes; {app_plists[0]}')
+          PYVERIFY
 
       - run: make release
 
