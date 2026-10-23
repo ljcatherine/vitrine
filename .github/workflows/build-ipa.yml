@@ -50,7 +50,19 @@ jobs:
           # Google Drive links usually return an HTML confirmation page to curl.
           if [[ "$IPA_URL" =~ ^https://(drive|docs)\.google\.com/ ]]; then
             python3 -m pip install --break-system-packages gdown
-            python3 -m gdown --fuzzy "$IPA_URL" -O ipa/spotify.ipa
+            DRIVE_ID="$(python3 - <<'PYDRIVE'
+          import os, re
+          from urllib.parse import urlparse, parse_qs
+          url = os.environ['IPA_URL']
+          parsed = urlparse(url)
+          match = re.search(r'/file/d/([A-Za-z0-9_-]+)', parsed.path)
+          file_id = match.group(1) if match else parse_qs(parsed.query).get('id', [''])[0]
+          if not file_id or not re.fullmatch(r'[A-Za-z0-9_-]+', file_id):
+              raise SystemExit('::error::Could not extract a Google Drive file ID from the supplied URL')
+          print(file_id)
+          PYDRIVE
+            )"
+            python3 -m gdown "$DRIVE_ID" -O ipa/spotify.ipa
           else
             curl --fail --location --show-error --silent \
               --retry 3 --connect-timeout 30 \
